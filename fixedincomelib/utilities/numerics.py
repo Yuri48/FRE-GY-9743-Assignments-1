@@ -98,6 +98,22 @@ class Interpolator1DPCP(Interpolator1D):
 
     With axis1 = [1, 3, 5, 7], values = [3, 4, 5, 6]:
         f(0.5) = 3, f(1) = 3, f(1.5) = 4, f(3) = 4, f(5.5) = 6, f(8) = 6
+
+    Convention
+    ----------
+    Node i "owns" the half-open bucket (x_{i-1}, x_i], so that f is left
+    continuous: f(x_i) = y_i and f(x_i + eps) = y_{i+1}.  Flat extrapolation
+    extends the first bucket to -inf and the last bucket to +inf:
+
+        bucket_0     = (-inf, x_0]
+        bucket_i     = (x_{i-1}, x_i]          for 0 < i < N-1
+        bucket_{N-1} = (x_{N-2}, +inf)
+
+    (for N == 1 the single bucket is the whole real line).
+
+    Because f is linear in the ordinates y, the interpolated value and its
+    integral are both of the form  sum_i w_i(x) * y_i , so the gradient with
+    respect to y is just the weight vector w(x), which never depends on y.
     """
 
     def __init__(self, axis1: np.ndarray, values: np.ndarray,
@@ -106,23 +122,58 @@ class Interpolator1DPCP(Interpolator1D):
                          InterpMethod.PIECEWISE_CONSTANT_LEFT_CONTINUOUS,
                          extrapolation_method)
         assert self.extrap_method_ == ExtrapMethod.FLAT
+        assert self.length_ >= 1, "need at least one knot"
+        # lower / upper edge of every bucket (see class docstring)
+        self.bucket_lo_ = np.concatenate(([-np.inf], self.axis1_[:-1]))
+        self.bucket_hi_ = np.concatenate((self.axis1_[:-1], [np.inf]))
 
+    # ------------------------------------------------------------------ #
+    # helpers
+    # ------------------------------------------------------------------ #
+    def _bucket_index(self, x: float) -> int:
+        """Index i of the bucket (x_{i-1}, x_i] containing x.
+
+        np.searchsorted(..., side='left') returns the number of knots strictly
+        smaller than x, which is exactly the left-continuous bucket index; the
+        right wing (x > x_{N-1}) is clipped onto the last node.
+        """
+        idx = int(np.searchsorted(self.axis1_, x, side='left'))
+        return min(idx, self.length_ - 1)
+
+    def _bucket_overlaps(self, start_x: float, end_x: float) -> np.ndarray:
+        """Length of  [start_x, end_x] intersect bucket_i  for every i (>= 0)."""
+        lo = np.maximum(self.bucket_lo_, start_x)
+        hi = np.minimum(self.bucket_hi_, end_x)
+        return np.maximum(hi - lo, 0.0)
+
+    # ------------------------------------------------------------------ #
+    # interface
+    # ------------------------------------------------------------------ #
     def interpolate(self, x: float) -> float:
-        #TODO
-        pass
+        return float(self.values_[self._bucket_index(x)])
 
     def integrate(self, start_x: float, end_x: float) -> float:
-        #TODO
-        pass
+        # int_l^u f = sum_i y_i * |[l,u] cap bucket_i| ; orientation-aware
+        sign = 1.0
+        if end_x < start_x:
+            start_x, end_x = end_x, start_x
+            sign = -1.0
+        w = self._bucket_overlaps(start_x, end_x)
+        return sign * float(np.dot(w, self.values_))
 
     def gradient_wrt_ordinate(self, x: float) -> np.ndarray:
-        #TODO
-        pass
+        # f(x) = y_i for the owning bucket  =>  df/dy = e_i
+        grad = np.zeros(self.length_)
+        grad[self._bucket_index(x)] = 1.0
+        return grad
 
     def gradient_of_integrated_value_wrt_ordinate(self, start_x: float, end_x: float) -> np.ndarray:
-        #TODO
-        pass
-
+        # I = sum_i y_i * w_i  =>  dI/dy_i = w_i  (the overlap lengths)
+        sign = 1.0
+        if end_x < start_x:
+            start_x, end_x = end_x, start_x
+            sign = -1.0
+        return sign * self._bucket_overlaps(start_x, end_x)
 
 class InterpolatorFactory:
 
